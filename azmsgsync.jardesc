@@ -13,6 +13,5 @@
     <selectedElements exportClassFiles="true" exportJavaFiles="true" exportOutputFolder="false">
         <javaElement handleIdentifier="=azmsgsync/&lt;com.vuze.plugins.azmsgsync"/>
         <javaElement handleIdentifier="=azmsgsync/&lt;com.vuze.plugins.azmsgsync.internat"/>
-        <file path="/azmsgsync/plugin.properties"/>
     </selectedElements>
 </jardesc>

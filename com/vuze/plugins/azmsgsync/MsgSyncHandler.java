@@ -4586,7 +4586,7 @@ MsgSyncHandler
 				reportErrorRaw( 
 					"Node '" + getKeyString() + 
 					"' has been banned due to flooding\nTo unban the node enter '/control unban " + getKeyString() + 
-					"'. See http://wiki.vuze.com/w/Decentralized_Chat#Control_Commands[[Control%20Commands]] for more information." );
+					"'. See http://wiki.biglybt.com/w/Decentralized_Chat#Control_Commands[[Control%20Commands]] for more information." );
 				
 				return( false );
 				

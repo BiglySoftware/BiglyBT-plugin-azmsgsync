@@ -44,6 +44,7 @@ import javax.crypto.spec.SecretKeySpec;
 import com.biglybt.core.CoreFactory;
 import com.biglybt.core.config.COConfigurationManager;
 import com.biglybt.core.util.AENetworkClassifier;
+import com.biglybt.core.util.AERunStateHandler;
 import com.biglybt.core.util.AERunnable;
 import com.biglybt.core.util.AEThread2;
 import com.biglybt.core.util.BDecoder;
@@ -251,6 +252,8 @@ MsgSyncHandler
 	private volatile long			first_sync_attempt_time		= -1;
 	private volatile long			last_successful_sync_time 	= -1;
 	
+	private final long create_time;
+	
 	private Set<MsgSyncNode> active_syncs		 	= new HashSet<MsgSyncNode>();
 	private Set<MsgSyncNode> active_tunnels	 		= new HashSet<MsgSyncNode>();
 		
@@ -346,6 +349,8 @@ MsgSyncHandler
 		
 		throws Exception
 	{
+		create_time = SystemTime.getMonotonousTime();
+
 		plugin			= _plugin;
 		dht				= _dht;
 		user_key		= _key;
@@ -404,7 +409,7 @@ MsgSyncHandler
 		boolean		full )
 	
 		throws Exception
-	{
+	{		
 		byte[] gs = GENERAL_SECRET_RAND.clone();
 		
 		for ( int i=0; i<user_key.length;i++ ){
@@ -704,6 +709,8 @@ MsgSyncHandler
 				
 		throws Exception
 	{
+		create_time = SystemTime.getMonotonousTime();
+		
 		plugin			= _plugin;
 		dht				= _dht;
 		
@@ -785,6 +792,8 @@ MsgSyncHandler
 		
 		throws Exception
 	{
+		create_time = SystemTime.getMonotonousTime();
+		
 		plugin			= _plugin;
 		dht				= _dht;
 		user_key		= importB32Bytes( _data, "key" );
@@ -1952,9 +1961,47 @@ MsgSyncHandler
 			saveMessages();
 		}
 		
+		long	last_message_secs_ago;
+		
+		synchronized( message_lock ){
+			
+			if ( messages.isEmpty()){
+				
+				last_message_secs_ago = (SystemTime.getMonotonousTime() - create_time )/1000;
+				
+			}else{
+				
+				last_message_secs_ago = messages.getLast().getAgeSecs();
+			}
+		}
+		
 			// slower sync rate for anonymous, higher latency/cost 
 		
-		if ( count % ( is_anonymous_chat?2:1)  == 0 ){
+		int SYNC_TICK_COUNT = is_anonymous_chat?2:1;
+		
+		if ( last_message_secs_ago < 2*60 ){
+			
+		}else if ( last_message_secs_ago < 5*60 ){
+			
+			SYNC_TICK_COUNT *= 2;
+			
+		}else if ( last_message_secs_ago < 60*60 ){
+
+			SYNC_TICK_COUNT *= 3;
+			
+		}else if ( last_message_secs_ago < 5*60 ){
+			
+			SYNC_TICK_COUNT *= 4;
+		}
+		
+		if ( AERunStateHandler.isDHTSleeping()){
+			
+			SYNC_TICK_COUNT *= 2;
+		}
+		
+		//System.out.println( getName() + ": sync=" + SYNC_TICK_COUNT );
+		
+		if ( count % ( SYNC_TICK_COUNT)  == 0 ){
 
 			return( sync());
 		}
@@ -4766,7 +4813,7 @@ MsgSyncHandler
 			}
 			
 			// long	start = SystemTime.getMonotonousTime();
-			
+						
 			byte[] reply_bytes = 
 				sync_node.getContact().call(
 					new DHTPluginProgressListener() {

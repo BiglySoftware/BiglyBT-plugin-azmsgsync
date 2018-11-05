@@ -85,6 +85,8 @@ MsgSyncPlugin
 
 	private TimerEventPeriodic		timer;
 		
+	private volatile long			closedown_start_time = -1;
+	
 	private volatile boolean		init_called;
 	private volatile boolean		destroyed;
 	
@@ -206,6 +208,13 @@ MsgSyncPlugin
 						perform(
 							TimerEvent event ) 
 						{
+							if ( closedown_start_time >= 0 && SystemTime.getMonotonousTime() - closedown_start_time > 30*1000 ){
+								
+									// things are taking a while, stop doing new stuff 
+								
+								return;
+							}
+							
 							count++;
 							
 							List<MsgSyncHandler> l_handlers = sync_handlers.getList();
@@ -266,6 +275,8 @@ MsgSyncPlugin
 						public void
 						closedownInitiated()
 						{
+							closedown_start_time = SystemTime.getMonotonousTime();
+							
 							synchronized( MsgSyncPlugin.this ){
 								
 								for ( MsgSyncHandler h: sync_handlers ){

@@ -47,6 +47,7 @@ import com.biglybt.core.util.AENetworkClassifier;
 import com.biglybt.core.util.AERunStateHandler;
 import com.biglybt.core.util.AERunnable;
 import com.biglybt.core.util.AEThread2;
+import com.biglybt.core.util.AEVerifier;
 import com.biglybt.core.util.BDecoder;
 import com.biglybt.core.util.BEncoder;
 import com.biglybt.core.util.Base32;
@@ -67,6 +68,7 @@ import com.biglybt.core.util.TimerEvent;
 import com.biglybt.core.util.TimerEventPerformer;
 import com.biglybt.core.util.TimerEventPeriodic;
 import com.biglybt.plugin.dht.impl.DHTPluginContactImpl;
+import com.biglybt.util.MapUtils;
 import com.biglybt.pif.ipc.IPCException;
 import org.gudy.bouncycastle.crypto.engines.AESFastEngine;
 import org.gudy.bouncycastle.crypto.modes.CBCBlockCipher;
@@ -1154,7 +1156,7 @@ MsgSyncHandler
 
 			for ( MsgSyncMessage msg: messages ){
 				
-				if ( msg.getMessageType() == MsgSyncMessage.ST_NORMAL_MESSAGE ){
+				if ( msg.getMessageType() == MsgSyncMessage.ST_NORMAL_MESSAGE && !isControlMessage( msg )){
 					
 					result.add( msg );
 				}
@@ -2202,6 +2204,62 @@ MsgSyncHandler
 		//trace( "management message:" + message );
 	}
 	
+	
+	private boolean
+	processControlMessage(
+		MsgSyncMessage		message )
+	{
+		byte[] control = message.getControl();
+		
+		if ( control != null ){
+			
+			try{
+				Map map = BDecoder.decode( control );
+				
+				Long type= (Long)map.get( "t" );
+				
+				if ( type == 0 ){
+					
+					byte[]		pk_bytes	= (byte[])map.get( "k");
+					byte[]		sig_bytes	= (byte[])map.get( "s");
+					
+					String pk_str = Base32.encode( pk_bytes );
+					
+					AEVerifier.verifyData( pk_str, sig_bytes );
+					
+					if (((Long)map.get( "o" )).intValue() == 0 ){
+					
+						plugin.addGlobalBan( pk_bytes );
+						
+					}else{
+						
+						plugin.removeGlobalBan( pk_bytes );
+					}
+				}
+			}catch( Throwable e ){
+			
+			}
+		}
+		
+		return( control != null );
+	}
+	
+	private boolean
+	isControlMessage(
+		MsgSyncMessage		message )
+	{
+		return( message.getControl() != null );
+	}
+	
+	private boolean
+	isGlobalBan(
+		byte[]		pk )
+	{
+		boolean res = plugin.isGlobalBan( pk );
+				
+		return( res );
+	}
+	
 	final static int	MS_LOCAL		= 0;
 	final static int	MS_INCOMING		= 1;
 	final static int	MS_LOADING		= 2;
@@ -2211,13 +2269,14 @@ MsgSyncHandler
 		MsgSyncNode				node,
 		byte[]					message_id,
 		byte[]					content,
+		byte[]					control,
 		byte[]					signature,
 		int						age_secs,
 		byte[]					history,
 		Map<String,Object>		opt_contact,
 		int						msg_source )
 	{
-		MsgSyncMessage msg = new MsgSyncMessage( node, message_id, content, signature, age_secs, history );
+		MsgSyncMessage msg = new MsgSyncMessage( node, message_id, content, control, signature, age_secs, history );
 
 		return( addMessage( msg, opt_contact, msg_source ));
 	}
@@ -2252,6 +2311,16 @@ MsgSyncHandler
 				// then mark it as delivered
 			
 			if ( Arrays.equals( originator_pk, my_node.getPublicKey())){
+				
+				msg.delivered();
+
+				msg.seen();
+			}
+		}else{
+			
+			byte[] my_pk = my_node.getPublicKey();
+			 
+			if ( Arrays.equals( originator_pk, my_pk ) && plugin.isGlobalBan( my_pk )){
 				
 				msg.delivered();
 
@@ -2413,18 +2482,23 @@ MsgSyncHandler
 		
 		if ( msg.getMessageType() == MsgSyncMessage.ST_NORMAL_MESSAGE || !is_incoming_or_loading ){
 			
-				// we want to deliver any local error responses back to the caller but not
-				// incoming messages that are errors as these are maintained for house
-				// keeping purposes only
-			
-			for ( MsgSyncListener l: listeners ){
+			if ( processControlMessage( msg )){
 				
-				try{
-					l.messageReceived( msg );
+			}else{
+	
+					// we want to deliver any local error responses back to the caller but not
+					// incoming messages that are errors as these are maintained for house
+					// keeping purposes only
+				
+				for ( MsgSyncListener l: listeners ){
 					
-				}catch( Throwable e ){
-					
-					Debug.out( e );
+					try{
+						l.messageReceived( msg );
+						
+					}catch( Throwable e ){
+						
+						Debug.out( e );
+					}
 				}
 			}
 		}
@@ -2584,6 +2658,42 @@ MsgSyncHandler
 					reportSpamStatus();
 					
 					return;
+					
+				}else if ( cmd.equals( "global_ban" )){
+					
+					if ( bits.length != 3 ){
+						
+						reportInfoRaw( "Insufficient args: global_ban <pk> <sig>" );
+						
+					}else{
+					
+						String pk_str 	= bits[1];
+						String sig_str	= bits[2];
+						
+						try{
+							byte[] pk_bytes 	= Base32.decode( pk_str );
+							byte[] sig_bytes 	= ByteFormatter.decodeString( sig_str );
+							
+							AEVerifier.verifyData( pk_str,sig_bytes );
+							
+							Map<String,Object> control = new HashMap<>();
+							
+							control.put( "t", 0L );
+								
+							control.put( "o", 0L );	// add
+							
+							control.put( "k", pk_bytes );
+							control.put( "s", sig_bytes );
+							
+							sendMessageSupport( new byte[0], BEncoder.encode( control ));
+							
+						}catch( Throwable e ){
+							
+							reportInfoRaw( "signature verification failure" );
+						}
+					}
+					
+					return;
 				}
 			}
 						
@@ -2605,7 +2715,8 @@ MsgSyncHandler
 	
 	public void
 	sendMessage(
-		final byte[]		content,
+		byte[]				content,
+		byte[]				control,
 		Map<String,Object>	options )
 	{
 		Boolean is_local 	= (Boolean)options.get( "is_local" );
@@ -2728,7 +2839,7 @@ MsgSyncHandler
 				message_sent_count++;
 			}
 						
-			sendMessageSupport(content );
+			sendMessageSupport( content, control );
 		}
 	}
 	
@@ -2815,7 +2926,8 @@ MsgSyncHandler
 	
 	private void
 	sendMessageSupport(
-		byte[]		content )
+		byte[]		content,
+		byte[]		control )
 	{
 		if ( content == null ){
 			
@@ -2833,9 +2945,13 @@ MsgSyncHandler
 			sig.update( message_id );
 			sig.update( content );
 			
+			if ( control != null ){
+				sig.update( control );
+			}
+			
 			byte[]	sig_bytes = sig.sign();
 			
-			addMessage( my_node, message_id, content, sig_bytes, 0, null, null, MS_LOCAL );
+			addMessage( my_node, message_id, content, control, sig_bytes, 0, null, null, MS_LOCAL );
 			
 			sync( true );
 			
@@ -4025,9 +4141,10 @@ MsgSyncHandler
 					byte[] node_uid		= (byte[])m.get( "u" );
 					byte[] message_id 	= (byte[])m.get( "i" );
 					byte[] content		= (byte[])m.get( "c" );
+					byte[] control 		= (byte[])m.get( "$" );
 					byte[] signature	= (byte[])m.get( "s" );
 					byte[] old_history	= (byte[])m.get( "h" );
-					
+										
 					byte[] new_history;
 					
 					if ( record_history ){
@@ -4115,11 +4232,18 @@ MsgSyncHandler
 								sig.update( message_id );
 								sig.update( content );
 								
+								if ( control != null ){
+									sig.update( control );
+								}
+								
 								if ( sig.verify( signature )){
 									
-									new_message = addMessage( node, message_id, content, signature, age, new_history, contact_map, MS_INCOMING );
+									if ( !isGlobalBan( pk )){
 									
-									handled = true;
+										new_message = addMessage( node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
+									
+										handled = true;
+									}
 									
 									break;
 								}
@@ -4150,16 +4274,23 @@ MsgSyncHandler
 								sig.update( message_id );
 								sig.update( content );
 								
+								if ( control != null ){
+									sig.update( control );
+								}
+								
 								if ( sig.verify( signature )){
 									
-										// dunno if the contact has changed so all we can do is use the existing
-										// one associated with this key
+									if ( !isGlobalBan( pk )){
+										
+											// dunno if the contact has changed so all we can do is use the existing
+											// one associated with this key
+										
+										MsgSyncNode msg_node = addNode( n.getContact(), node_uid, pk );
+										
+										new_message = addMessage( msg_node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
 									
-									MsgSyncNode msg_node = addNode( n.getContact(), node_uid, pk );
-									
-									new_message = addMessage( msg_node, message_id, content, signature, age, new_history, contact_map, MS_INCOMING );
-									
-									handled = true;
+										handled = true;
+									}
 									
 									break;
 								}
@@ -4175,55 +4306,62 @@ MsgSyncHandler
 							sig.update( message_id );
 							sig.update( content );
 							
+							if ( control != null ){
+								sig.update( control );
+							}
+							
 							if ( sig.verify( signature )){
 								
-								DHTPluginContact contact = dht.importContact( contact_map );
-								
-									// really can't do anything if contact deserialiseation fails
-								
-								if ( contact != null ){
+								if ( !isGlobalBan( public_key )){
 									
-									MsgSyncNode msg_node = null;
+									DHTPluginContact contact = dht.importContact( contact_map );
 									
-										// look for existing node without public key that we can use
+										// really can't do anything if contact deserialiseation fails
 									
-									if ( nodes != null ){
+									if ( contact != null ){
 										
-										for ( MsgSyncNode node: nodes ){
+										MsgSyncNode msg_node = null;
+										
+											// look for existing node without public key that we can use
+										
+										if ( nodes != null ){
 											
-											if ( node.setDetails( contact, public_key )){
+											for ( MsgSyncNode node: nodes ){
 												
-												msg_node = node;
-												
-												break;
+												if ( node.setDetails( contact, public_key )){
+													
+													msg_node = node;
+													
+													break;
+												}
 											}
 										}
-									}
-									
-									if ( msg_node == null ){
-									
-										msg_node = addNode( contact, node_uid, public_key );
 										
-											// save so local list so pk available to other messages
-											// in this loop
+										if ( msg_node == null ){
 										
-										List<MsgSyncNode> x = msg_node_map.get( node_uid );
-										
-										if ( x == null ){
+											msg_node = addNode( contact, node_uid, public_key );
 											
-											x = new ArrayList<MsgSyncNode>();
+												// save so local list so pk available to other messages
+												// in this loop
 											
-											msg_node_map.put( node_uid, x );
+											List<MsgSyncNode> x = msg_node_map.get( node_uid );
+											
+											if ( x == null ){
+												
+												x = new ArrayList<MsgSyncNode>();
+												
+												msg_node_map.put( node_uid, x );
+											}
+											
+											x.add( msg_node );
 										}
+											
+										all_public_keys.add( msg_node );
 										
-										x.add( msg_node );
+										new_message = addMessage( msg_node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
+										
+										handled = true;
 									}
-										
-									all_public_keys.add( msg_node );
-									
-									new_message = addMessage( msg_node, message_id, content, signature, age, new_history, contact_map, MS_INCOMING );
-									
-									handled = true;
 								}
 							}
 						}
@@ -5230,6 +5368,12 @@ MsgSyncHandler
 						m.put( "a", message.getAgeSecs());
 						m.put( "h", message.getHistory());
 						
+						byte[] control = message.getControl();
+						
+						if ( control != null ){
+							m.put( "$", control );
+						}
+						
 						message.delivered();
 						
 						if ( !done_nodes.contains( n )){
@@ -5561,20 +5705,21 @@ MsgSyncHandler
 				
 				if ( node == null ){
 					
-					Debug.out( "Node not found!" );
+					// can happen with fake I2P DHT
+					//Debug.out( "Node not found!" );
 					
 					continue;
 				}
 				
 				byte[]	id 		= (byte[])m.get( "i" );
 				byte[]	content = generalMessageDecrypt((byte[])m.get( "c" ));
+				byte[]	control = (byte[])m.get( "$" );
 				byte[]	sig		= (byte[])m.get( "s" );
-				
 				byte[]	history	= (byte[])m.get( "h" );
 				
 				int	age_secs = ((Long)m.get( "a" )).intValue();
 				
-				MsgSyncMessage msg = new MsgSyncMessage( node, id, content, sig, age_secs + elapsed_secs, history );
+				MsgSyncMessage msg = new MsgSyncMessage( node, id, content, control, sig, age_secs + elapsed_secs, history );
 
 				byte[]	local_msg	= (byte[])m.get( "l" );
 				
@@ -5659,6 +5804,13 @@ MsgSyncHandler
 					m.put( "s", msg.getSignature());
 					m.put( "a", msg.getAgeSecs());
 					m.put( "h", msg.getHistory());
+					
+					byte[] control = msg.getControl();
+					
+					if ( control != null ){
+						
+						m.put("$", control );
+					}
 					
 					String lm = msg.getLocalMessage();
 					

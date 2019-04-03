@@ -35,7 +35,10 @@ import com.biglybt.core.util.AEThread2;
 import com.biglybt.core.util.AsyncDispatcher;
 import com.biglybt.core.util.BDecoder;
 import com.biglybt.core.util.BEncoder;
+import com.biglybt.core.util.Base32;
+import com.biglybt.core.util.ByteArrayHashMap;
 import com.biglybt.core.util.Debug;
+import com.biglybt.core.util.FileUtil;
 import com.biglybt.core.util.SimpleTimer;
 import com.biglybt.core.util.SystemTime;
 import com.biglybt.core.util.TimerEvent;
@@ -93,6 +96,10 @@ MsgSyncPlugin
 	private AESemaphore				init_sem = new AESemaphore( "MsgSync:init" );
 	
 	private File		data_dir;
+	
+	private volatile ByteArrayHashMap<String>		global_bans 		= new ByteArrayHashMap<>();
+	private boolean									global_bans_dirty	= false;
+	
 	
 	@Override
 	public void
@@ -194,6 +201,8 @@ MsgSyncPlugin
 							}
 						});
 	
+				loadGlobalBans();
+				
 				timer = SimpleTimer.addPeriodicEvent(
 					"MsgSync:periodicSync",
 					TIMER_PERIOD,
@@ -275,6 +284,8 @@ MsgSyncPlugin
 						public void
 						closedownInitiated()
 						{
+							saveGlobalBans();
+							
 							closedown_start_time = SystemTime.getMonotonousTime();
 							
 							synchronized( MsgSyncPlugin.this ){
@@ -423,7 +434,7 @@ MsgSyncPlugin
 						
 					log( "Got handler: " + handler.getString());
 					
-					handler.sendMessage( message.getBytes( "UTF-8" ), new HashMap<String, Object>());
+					handler.sendMessage( message.getBytes( "UTF-8" ), null, new HashMap<String, Object>());
 					
 				}else if ( c.equals( "save" )){
 					
@@ -506,6 +517,113 @@ MsgSyncPlugin
 		}catch( Throwable e){
 			
 			log( "Command exec failed", e );
+		}
+	}
+	
+	protected boolean
+	isGlobalBan(
+		byte[] 		pk )
+	{
+			// common
+		
+		return( global_bans.containsKey( pk));
+	}
+	
+	protected void
+	addGlobalBan(
+		byte[] 		pk )
+	{
+		synchronized( global_bans ){
+			
+				// rare
+			
+			if ( !global_bans.containsKey( pk )){
+				
+				ByteArrayHashMap<String> temp = global_bans.duplicate();
+				
+				temp.put( pk,  "" );
+				
+				global_bans = temp;
+				
+				global_bans_dirty = true;
+			}
+		}
+	}
+	
+	protected void
+	removeGlobalBan(
+		byte[] 		pk )
+	{
+		synchronized( global_bans ){
+			
+			if ( global_bans.containsKey( pk )){
+				
+				ByteArrayHashMap<String> temp = global_bans.duplicate();
+				
+				temp.remove( pk );
+				
+				global_bans = temp;
+				
+				global_bans_dirty = true;
+			}
+		}
+	}
+	
+	protected void
+	loadGlobalBans()
+	{
+		synchronized( global_bans ){
+			
+			File config = new File( getPersistDir(), "gb.dat" );
+			
+			if ( config.exists()){
+				
+				Map<String,Object> map = FileUtil.readResilientFile( config );
+				
+				List<byte[]>	list = (List<byte[]>)map.get( "l" );
+				
+				if ( list != null ){
+					
+					for ( byte[] pk: list ){
+						
+						global_bans.put( pk,  "" );
+					}
+				}
+			}
+		}
+	}
+	
+	protected void
+	saveGlobalBans()
+	{
+		synchronized( global_bans ){
+			
+			if ( global_bans_dirty ){
+				
+				global_bans_dirty = false;
+				
+				File config = new File( getPersistDir(), "gb.dat" );
+				
+				if ( global_bans.isEmpty()){
+					
+					FileUtil.deleteResilientFile( config );
+					
+				}else{
+					
+					Map<String,Object>	map = new HashMap<>();
+										
+					List<byte[]>	list = new ArrayList<>( global_bans.size());
+					
+					map.put( "l", list );
+					
+					for ( byte[] pk: global_bans.keys()){
+						
+						list.add( pk );
+					}
+					
+					FileUtil.writeResilientFile( config, map );
+				}
+			}
 		}
 	}
 	
@@ -1020,7 +1138,7 @@ MsgSyncPlugin
 			throw( new IPCException( "Plugin has been unloaded" ));
 		}
 		
-		handler.sendMessage( content, options );
+		handler.sendMessage( content, null, options );
 		
 		Map<String,Object>	reply = new HashMap<String, Object>();
 

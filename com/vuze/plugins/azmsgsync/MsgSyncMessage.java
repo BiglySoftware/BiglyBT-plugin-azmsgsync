@@ -32,9 +32,10 @@ MsgSyncMessage
 	public static final int ST_NORMAL_MESSAGE	= 1;
 	public static final int ST_LOCAL_MESSAGE	= 2;
 	
-	private final MsgSyncNode	node;
-	private final byte[]		message_id;
-	private final byte[]		content;
+	private final MsgSyncNode			node;
+	private final byte[]				message_id;
+	private final byte[]				content;
+	private final byte[]				control;
 	
 	private final byte[]		signature;
 	
@@ -52,12 +53,13 @@ MsgSyncMessage
 	
 	protected
 	MsgSyncMessage(
-		MsgSyncNode		_node,
-		byte[]			_message_id,
-		byte[]			_content,
-		byte[]			_signature,
-		int				_age_secs,
-		byte[]			_history )
+		MsgSyncNode			_node,
+		byte[]				_message_id,
+		byte[]				_content,
+		byte[]				_control,
+		byte[]				_signature,
+		int					_age_secs,
+		byte[]				_history )
 	{
 		node		= _node;
 		message_id	= _message_id;
@@ -81,6 +83,8 @@ MsgSyncMessage
 			
 			content		= _content;
 		}
+		
+		control = _control;
 	}
 	
 	protected
@@ -93,6 +97,7 @@ MsgSyncMessage
 		node		= _node;
 		message_id	= _message_id;
 		content		= new byte[0];
+		control		= null;
 		signature	= _signature;
 		history		= BLANK_HISTORY;
 		
@@ -228,6 +233,12 @@ MsgSyncMessage
 	getContent()
 	{
 		return( content );
+	}
+	
+	public byte[]
+	getControl()
+	{
+		return( control );
 	}
 	
 	public byte[]

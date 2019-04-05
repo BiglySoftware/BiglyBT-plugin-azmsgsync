@@ -35,7 +35,6 @@ import com.biglybt.core.util.AEThread2;
 import com.biglybt.core.util.AsyncDispatcher;
 import com.biglybt.core.util.BDecoder;
 import com.biglybt.core.util.BEncoder;
-import com.biglybt.core.util.Base32;
 import com.biglybt.core.util.ByteArrayHashMap;
 import com.biglybt.core.util.Debug;
 import com.biglybt.core.util.FileUtil;
@@ -522,11 +521,17 @@ MsgSyncPlugin
 	
 	protected boolean
 	isGlobalBan(
-		byte[] 		pk )
+		MsgSyncMessage	message )
 	{
-			// common
 		
-		return( global_bans.containsKey( pk));
+		MsgSyncNode node = message.getNode();
+		
+		if ( node != null ){
+			
+			return( global_bans.containsKey( node.getPublicKey()));
+		}
+		
+		return( false );
 	}
 	
 	protected void
@@ -567,6 +572,12 @@ MsgSyncPlugin
 				global_bans_dirty = true;
 			}
 		}
+	}
+	
+	protected int
+	getGlobalBans()
+	{
+		return( global_bans.size());
 	}
 	
 	protected void
@@ -1011,6 +1022,11 @@ MsgSyncPlugin
 					messageReceived(
 						final MsgSyncMessage message ) 
 					{
+						if ( isGlobalBan( message )){
+							
+							return;
+						}
+						
 							// don't block things, in particular the message.getNode().getContact() can
 							// block when DHTs are initialising...
 						
@@ -1104,12 +1120,15 @@ MsgSyncPlugin
 			
 			for ( MsgSyncMessage msg: messages ){
 				
-				try{
-					l.messageReceived( msg );
+				if ( !isGlobalBan( msg )){
 					
-				}catch( Throwable e ){
-					
-					Debug.out( e );
+					try{
+						l.messageReceived( msg );
+						
+					}catch( Throwable e ){
+						
+						Debug.out( e );
+					}
 				}
 			}
 		}catch( Throwable e ){

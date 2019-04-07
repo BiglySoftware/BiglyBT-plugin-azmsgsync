@@ -2564,7 +2564,7 @@ MsgSyncHandler
 												
 						String msg_id = ByteFormatter.encodeString( sig, 8, 3 );
 						
-						System.out.println( "    " + msg_id + ", age=" +  message.getAgeSecs() + " (" + message.getAgeSecsWhenReceived() + ")" + ", delivered=" + message.getDeliveryCount() + ", seen=" + message.getSeenCount() + ", content=" + new String( message.getContent()) + ", control=" + message.getControl());
+						System.out.println( "    " + msg_id + ", age=" +  message.getAgeSecs() + " (" + message.getAgeSecsWhenReceived() + ")" + ", delivered=" + message.getDeliveryCount() + ", seen=" + message.getSeenCount() + ", content=" + new String( message.getContent()) + ", control=" + message.getControl() + ", pk=" + Base32.encode( message.getNode().getPublicKey()));
 					}
 				}
 				
@@ -5195,6 +5195,8 @@ MsgSyncHandler
 				int	messages_they_have 	= n_messages_they_have==null?-1:n_messages_they_have.intValue();
 				int	oldest_age			= n_oldest_age==null?0:n_oldest_age.intValue();
 				
+				int messages_hidden = 0;
+				
 				if ( oldest_age < 0 ){
 					
 					oldest_age = 0;
@@ -5290,7 +5292,18 @@ MsgSyncHandler
 									
 								}else{
 								
-									missing.add( msg );
+									if ( plugin.isGlobalBan( msg )){
+									
+										messages_hidden++;
+										
+										msg.seen();
+										
+										msg.delivered();
+										
+									}else{
+										
+										missing.add( msg );
+									}
 								}
 							}
 						}
@@ -5440,8 +5453,10 @@ MsgSyncHandler
 					}
 				}
 				
-				if ( 	messages_they_have > messages_we_have ||
-						( 	messages_they_have == messages_we_have &&
+				int messages_they_should_have = messages_they_have + messages_hidden;
+				
+				if ( 	messages_they_should_have > messages_we_have ||
+						( 	messages_they_should_have == messages_we_have &&
 							messages_we_have_they_deleted > 0 )){
 					
 					Map<String,Object> rendezvous_map = (Map<String,Object>)request_map.get( "z" );

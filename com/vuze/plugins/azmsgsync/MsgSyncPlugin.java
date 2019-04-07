@@ -523,12 +523,11 @@ MsgSyncPlugin
 	isGlobalBan(
 		MsgSyncMessage	message )
 	{
-		
 		MsgSyncNode node = message.getNode();
-		
+				
 		if ( node != null ){
 			
-			return( global_bans.containsKey( node.getPublicKey()));
+			return( global_bans.containsKey( node.getPublicKey()));			
 		}
 		
 		return( false );

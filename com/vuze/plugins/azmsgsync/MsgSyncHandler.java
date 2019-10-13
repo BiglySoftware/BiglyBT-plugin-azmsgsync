@@ -26,6 +26,7 @@ import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.net.Inet4Address;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.security.AlgorithmParameters;
@@ -34,6 +35,8 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -68,6 +71,7 @@ import com.biglybt.core.util.TimerEvent;
 import com.biglybt.core.util.TimerEventPerformer;
 import com.biglybt.core.util.TimerEventPeriodic;
 import com.biglybt.plugin.dht.impl.DHTPluginContactImpl;
+import com.biglybt.util.MapUtils;
 import com.biglybt.pif.ipc.IPCException;
 import org.gudy.bouncycastle.crypto.engines.AESFastEngine;
 import org.gudy.bouncycastle.crypto.modes.CBCBlockCipher;
@@ -90,7 +94,7 @@ import com.biglybt.plugin.dht.*;
 
 public class 
 MsgSyncHandler 
-	implements DHTPluginTransferHandler
+	implements DHTPluginTransferHandler, DHTPluginListener
 {
 		// version 1 - initial release
 		// version 2 - invert deleted message bloom keys
@@ -341,6 +345,11 @@ MsgSyncHandler
 	private Map<HashWrapper2, SpammerEntry>	spammer_map			= new HashMap<HashWrapper2, SpammerEntry>();
 	private Set<HashWrapper2>				spammer_bad_keys	= new HashSet<HashWrapper2>();
 	
+	private AtomicLong	v4_count = new AtomicLong();
+	private AtomicLong	v6_count = new AtomicLong();
+	
+	private boolean		full_init;
+	
 	protected
 	MsgSyncHandler(
 		MsgSyncPlugin			_plugin,
@@ -411,7 +420,9 @@ MsgSyncHandler
 		boolean		full )
 	
 		throws Exception
-	{		
+	{	
+		full_init		= full;
+		
 		byte[] gs = GENERAL_SECRET_RAND.clone();
 		
 		for ( int i=0; i<user_key.length;i++ ){
@@ -576,6 +587,20 @@ MsgSyncHandler
 			
 			public_key	= _public_key;
 			private_key	= _private_key;
+						
+			dht.addListener( this );
+			
+			my_node	= new MsgSyncNode( dht.getLocalAddresses(), my_uid, CryptoECCUtils.keyToRawdata( public_key ));
+		
+			if ( MapUtils.getMapBoolean( map, "v6hint", false )){
+				
+				if ( !my_node.setIPv6Hint( true )){
+					
+					map.remove( "v6hint" );
+					
+					config_updated = true;
+				}
+			}
 			
 			if ( config_updated ){
 				
@@ -583,9 +608,8 @@ MsgSyncHandler
 				
 				COConfigurationManager.setDirty();
 			}
+
 			
-			my_node	= new MsgSyncNode( dht.getLocalAddress(), my_uid, CryptoECCUtils.keyToRawdata( public_key ));
-		
 			if ( !is_private_chat ){
 							
 				peek_xfer_handler = 
@@ -604,6 +628,8 @@ MsgSyncHandler
 							DHTPluginContact	originator,
 							byte[]				request_bytes )
 						{
+							updateProtocolCounts( originator.getAddress());
+							
 							try{
 								Map<String,Object> request = BDecoder.decode( generalMessageDecrypt( request_bytes ));
 										
@@ -656,6 +682,8 @@ MsgSyncHandler
 							byte[]				key,
 							byte[]				value )
 						{
+							updateProtocolCounts( originator.getAddress());
+							
 							return( null );
 						}
 					};
@@ -745,7 +773,9 @@ MsgSyncHandler
 		
 		RandomUtils.nextSecureBytes( my_uid );
 
-		my_node	= new MsgSyncNode( dht.getLocalAddress(), my_uid, CryptoECCUtils.keyToRawdata( public_key ));
+		dht.addListener( this );
+		
+		my_node	= new MsgSyncNode( dht.getLocalAddresses(), my_uid, CryptoECCUtils.keyToRawdata( public_key ));
 		
 		dht_listen_key = new SHA1Simple().calculateHash( user_key );
 		
@@ -821,6 +851,14 @@ MsgSyncHandler
 		COConfigurationManager.setDirty();
 		
 		init( true );
+	}
+	
+	
+	public void
+	localAddressChanged(
+		DHTPluginContact	local_contact )
+	{
+		my_node.updateContacts( dht.getLocalAddresses());
 	}
 	
 	protected void
@@ -1304,6 +1342,8 @@ MsgSyncHandler
 					DHTPluginContact 	originator, 
 					DHTPluginValue 		value ) 
 				{
+					updateProtocolCounts( originator.getAddress());
+					
 					synchronized( waiting_contacts ){
 						
 						if ( checkDone( false )){
@@ -1549,6 +1589,8 @@ MsgSyncHandler
 					DHTPluginContact 	originator, 
 					DHTPluginValue 		value ) 
 				{
+					updateProtocolCounts( originator.getAddress());
+					
 					try{
 					
 						Map<String,Object> m = BDecoder.decode( value.getValue());
@@ -4892,7 +4934,7 @@ MsgSyncHandler
 					
 					DHTPlugin dht_plugin = (DHTPlugin)dht;
 					
-					DHT core_dht = dht_plugin.getDHT( DHTPlugin.NW_MAIN );
+					DHT core_dht = dht_plugin.getDHT( DHTPlugin.NW_AZ_MAIN );
 					
 					if ( core_dht != null ){
 						
@@ -5096,7 +5138,9 @@ MsgSyncHandler
 			
 			return( null );
 		}
-						
+			
+		updateProtocolCounts( originator.getAddress());
+		
 		if ( private_messaging_secret != null ){
 			
 			key = privateMessageDecrypt( key );
@@ -5549,6 +5593,71 @@ MsgSyncHandler
 		return( handleRead( originator, value ));
 	}
 	
+	private void
+	updateProtocolCounts(
+		InetSocketAddress	isa )
+	{
+		if ( isa.isUnresolved()){
+			
+		}else{
+			
+			long	v4;
+			long	v6;
+			
+			if ( isa.getAddress() instanceof Inet4Address ){
+				
+				v4	= v4_count.incrementAndGet();
+				
+				v6 = v6_count.get();
+				
+			}else{
+				
+				v4	= v4_count.get();
+				
+				v6 = v6_count.incrementAndGet();
+			}
+			
+			if ( SystemTime.getMonotonousTime() - create_time > 2*60*1000 ){
+				
+				Boolean ipv6_hint = null;
+				
+				if ( v4 == 0 ){
+					
+					if ( v6 > 5 ){
+						
+						ipv6_hint = true;
+					}
+				}else{
+					
+					ipv6_hint = false;
+				}
+				
+				if ( ipv6_hint != null ){
+					
+					if ( my_node.setIPv6Hint( ipv6_hint )){
+						
+						String	config_key = CryptoManager.CRYPTO_CONFIG_PREFIX + "msgsync." + dht.getNetwork() + "." + ByteFormatter.encodeString( user_key );
+						
+						Map map = COConfigurationManager.getMapParameter( config_key, new HashMap());
+	
+						if ( ipv6_hint ){
+							
+							map.put( "v6hint", true );
+							
+						}else{
+							
+							map.remove( "v6hint" );
+						}
+						
+						COConfigurationManager.setParameter( config_key, map );
+						
+						COConfigurationManager.setDirty();
+					}
+				}
+			}
+		}
+	}
+	
 	public void
 	addListener(
 		MsgSyncListener		listener )
@@ -5915,6 +6024,8 @@ MsgSyncHandler
 			
 				dht.unregisterHandler( peek_xfer_key, peek_xfer_handler ); 
 			}
+			
+			dht.removeListener( this );
 		}
 	}
 	

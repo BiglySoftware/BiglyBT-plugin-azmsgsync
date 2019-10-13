@@ -22,8 +22,10 @@
 
 package com.vuze.plugins.azmsgsync;
 
+import java.net.Inet6Address;
 import java.util.Arrays;
 
+import com.biglybt.core.util.Base32;
 import com.biglybt.core.util.SystemTime;
 
 import com.biglybt.plugin.dht.DHTPluginContact;
@@ -31,7 +33,7 @@ import com.biglybt.plugin.dht.DHTPluginContact;
 public class 
 MsgSyncNode 
 {
-	private DHTPluginContact		contact;
+	private DHTPluginContact[]		contacts;
 	private byte[]					uid;
 	private byte[]					public_key;
 	
@@ -47,15 +49,85 @@ MsgSyncNode
 	
 	protected
 	MsgSyncNode(
-		DHTPluginContact		_contact,
+		DHTPluginContact		contact,
+		byte[]					uid,
+		byte[]					public_key )
+	{
+		this( new DHTPluginContact[]{ contact }, uid, public_key);
+	}
+	
+	protected
+	MsgSyncNode(
+		DHTPluginContact[]		_contacts,
 		byte[]					_uid,
 		byte[]					_public_key )
 	{
-		contact		= _contact;
+		contacts	= _contacts;
 		uid			= _uid;
 		public_key	= _public_key;
 	}
 	
+	/**
+	 * Just for my-node
+	 * @param _contacts
+	 */
+	
+	protected void
+	updateContacts(
+		DHTPluginContact[]		_contacts )
+	{
+		
+	}
+	
+		/**
+		 * 
+		 * @param ipv6_pref
+		 * @return true if a change was made
+		 */
+	
+	protected boolean
+	setIPv6Hint(
+		boolean	ipv6_pref )
+	{
+		synchronized( this ){
+			
+			if ( contacts.length < 2 ){
+				
+				return( false );
+			}
+		
+			boolean	v6_0 = contacts[0].getAddress().getAddress() instanceof Inet6Address;
+			boolean	v6_1 = contacts[1].getAddress().getAddress() instanceof Inet6Address;
+				
+			if ( ipv6_pref ){
+				
+				if ( v6_0 ){
+					
+					return( false );
+				}
+			}else{
+				
+				if ( !v6_0 ){
+					
+					return( false );
+				}
+			}
+			
+			if ( v6_0 == v6_1 ){
+				
+				return( false );
+			}
+					
+			DHTPluginContact temp = contacts[0];
+			contacts[0] = contacts[1];
+			contacts[1] = temp;
+				
+			contact_str 	= MsgSyncHandler.getString( contacts[0] );
+			
+			return( true );
+		}
+	}
+		
 	protected boolean
 	setDetails(
 		DHTPluginContact	_contact,
@@ -68,7 +140,7 @@ MsgSyncNode
 				return( Arrays.equals( public_key, _public_key ));
 			}
 	
-			contact			= _contact;
+			contacts		= new DHTPluginContact[]{ _contact };
 			public_key		= _public_key;
 			
 			return( true );
@@ -82,9 +154,9 @@ MsgSyncNode
 	{
 		synchronized( this ){
 			
-			contact			= _contact;
+			contacts		= new DHTPluginContact[]{ _contact };
 			
-			contact_str 	= MsgSyncHandler.getString( contact );
+			contact_str 	= MsgSyncHandler.getString( contacts[0] );
 			
 			last_message_timestamp = _time;
 		}
@@ -165,7 +237,7 @@ MsgSyncNode
 	public DHTPluginContact
 	getContact()
 	{
-		return( contact );
+		return( contacts[0] );
 	}
 	
 	public String
@@ -178,7 +250,7 @@ MsgSyncNode
 		
 			//  this can block for a while in the case of anonymous DHT that hasn't initialised, so delay getting it
 		
-		contact_str = MsgSyncHandler.getString( contact );
+		contact_str = MsgSyncHandler.getString( contacts[0] );
 		
 		return( contact_str );
 	}

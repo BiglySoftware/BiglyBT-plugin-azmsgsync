@@ -2715,6 +2715,8 @@ MsgSyncHandler
 							
 							sendMessageSupport( new byte[0], BEncoder.encode( control ));
 							
+							reportInfoRaw( "ban accepted" );
+							
 						}catch( Throwable e ){
 							
 							reportInfoRaw( "signature verification failure" );

@@ -179,10 +179,12 @@ MsgSyncHandler
 	private volatile boolean						checking_dht;
 	private long									last_dht_check;
 
+	private final List<Object[]>					pending_handler_regs = new ArrayList<>();
+	
 	private byte[]									peek_xfer_key;
 	private DHTPluginTransferHandler				peek_xfer_handler;
 	
-	private boolean									dht_listen_key_registered;
+	private volatile boolean						dht_listen_keys_registered;
 	
 	private String						friendly_name = "";
 
@@ -272,6 +274,8 @@ MsgSyncHandler
 	
 	private volatile int 		status			= ST_INITIALISING;
 	private volatile int		last_dht_count	= -1;
+	
+	private boolean	dht_check_done;
 	
 	private volatile int		in_req;
 	private volatile int		out_req_ok;
@@ -609,6 +613,7 @@ MsgSyncHandler
 				COConfigurationManager.setDirty();
 			}
 
+			boolean dht_initialising = dht.isInitialising();
 			
 			if ( !is_private_chat ){
 							
@@ -688,19 +693,33 @@ MsgSyncHandler
 						}
 					};
 					
-				dht.registerHandler( 
-					peek_xfer_key, 
-					peek_xfer_handler, 
-					xfer_options );
+				if ( dht_initialising ){
+					
+					pending_handler_regs.add( new Object[]{ peek_xfer_key, peek_xfer_handler, xfer_options });
+
+				}else{
+					
+					dht.registerHandler( 
+						peek_xfer_key, 
+						peek_xfer_handler, 
+						xfer_options );
+				}
 			}
 					
-			dht.registerHandler( dht_listen_key, this, xfer_options );
+			if ( dht_initialising ){
+				
+				pending_handler_regs.add( new Object[]{ dht_listen_key, this, xfer_options });
 
-			dht_listen_key_registered	= true;
+			}else{
+				
+				dht.registerHandler( dht_listen_key, this, xfer_options );
+
+				dht_listen_keys_registered	= true;
+			}
 			
 			loadMessages();
 			
-			checkDHT( true );
+			checkDHT();
 			
 		}else{
 			
@@ -811,9 +830,16 @@ MsgSyncHandler
 			}
 		}
 		
-		dht.registerHandler( dht_listen_key, this, xfer_options );
+		if ( dht.isInitialising()){
+			
+			pending_handler_regs.add( new Object[]{ dht_listen_key, this, xfer_options });
+			
+		}else{
 		
-		dht_listen_key_registered = true;
+			dht.registerHandler( dht_listen_key, this, xfer_options );
+		
+			dht_listen_keys_registered = true;
+		}
 	}
 		
 	protected
@@ -1304,6 +1330,15 @@ MsgSyncHandler
 		Map<String,Object>				options,
 		final MsgSyncPeekListener		peek_listener )
 	{	
+		if ( dht.isInitialising()){
+			
+			log( "DHT Initialising, peek skipped" );
+			
+			peek_listener.complete( this );
+			
+			return;
+		}
+
 		log( "Peeking DHT for nodes" );
 		
 		final long start 	= SystemTime.getMonotonousTime();
@@ -1311,7 +1346,7 @@ MsgSyncHandler
 		Number	n_timeout = (Number)options.get( "timeout" );
 		
 		final long timeout = n_timeout==null?60*1000:n_timeout.longValue();
-		
+				
 		dht.get(
 			dht_listen_key,
 			"Message Sync peek: " + getString(),
@@ -1531,148 +1566,168 @@ MsgSyncHandler
 	}
 	
 	private void
-	checkDHT(
-		final boolean	first_time )
+	checkDHT()
 	{
-		if ( parent_handler != null ){
-			
-				// no DHT activity for child handlers
-			
-			return;
-		}
-		
-		synchronized( this ){
-			
-			if ( destroyed ){
+		try{
+			if ( parent_handler != null ){
+				
+					// no DHT activity for child handlers
 				
 				return;
 			}
 			
-			if ( checking_dht ){
+			synchronized( this ){
 				
-				return;
-			}
-			
-			checking_dht = true;
-			
-			last_dht_check	= SystemTime.getMonotonousTime();
-		}
-		
-		log( "Checking DHT for nodes" );
-		
-		dht.get(
-			dht_listen_key,
-			"Message Sync lookup: " + getString(),
-			DHTPluginInterface.FLAG_SINGLE_VALUE,
-			32,
-			60*1000,
-			false,
-			true,
-			new DHTPluginOperationAdapter() 
-			{
-				private boolean diversified;
+				if ( destroyed ){
 					
-				private int		dht_count = 0;
-				
-				@Override
-				public boolean
-				diversified() 
-				{
-					diversified = true;
-					
-					return( true );
+					return;
 				}
 				
-				@Override
-				public void 
-				valueRead(
-					DHTPluginContact 	originator, 
-					DHTPluginValue 		value ) 
+				if ( checking_dht ){
+					
+					return;
+				}
+				
+				checking_dht = true;
+				
+				last_dht_check	= SystemTime.getMonotonousTime();
+			}
+			
+			if ( dht.isInitialising()){
+				
+				log( "DHT is initialising, skipping DHT node check" );
+				
+				return;
+			}
+			
+			log( "Checking DHT for nodes" );
+			
+			dht.get(
+				dht_listen_key,
+				"Message Sync lookup: " + getString(),
+				DHTPluginInterface.FLAG_SINGLE_VALUE,
+				32,
+				60*1000,
+				false,
+				true,
+				new DHTPluginOperationAdapter() 
 				{
-					updateProtocolCounts( originator.getAddress());
-					
-					try{
-					
-						Map<String,Object> m = BDecoder.decode( value.getValue());
-					
-						addDHTContact( originator, m );
+					private boolean diversified;
 						
-						dht_count++;
+					private int		dht_count = 0;
+					
+					@Override
+					public boolean
+					diversified() 
+					{
+						diversified = true;
 						
-					}catch( Throwable e ){
-						
+						return( true );
 					}
-				}
-				
-				@Override
-				public void 
-				complete(
-					byte[] 		key, 
-					boolean 	timeout_occurred) 
-				{	
-					last_dht_count = dht_count;
 					
-					try{
-						if ( first_time ){
+					@Override
+					public void 
+					valueRead(
+						DHTPluginContact 	originator, 
+						DHTPluginValue 		value ) 
+					{
+						updateProtocolCounts( originator.getAddress());
+						
+						try{
+						
+							Map<String,Object> m = BDecoder.decode( value.getValue());
+						
+							addDHTContact( originator, m );
 							
-							if ( diversified ){
-								
-								log( "Not registering as sufficient nodes located" );
-								
-								status = ST_RUNNING;
-								
-							}else{
-								
-								log( "Registering node" );
-								
-								Map<String,Object>	map = new HashMap<String,Object>();
-								
-								map.put( "u", my_uid );
-								
-								try{
-									byte[] blah_bytes = BEncoder.encode( map );
-									
-									dht.put(
-											dht_listen_key,
-											"Message Sync write: " + getString(),
-											blah_bytes,
-											DHTPluginInterface.FLAG_SINGLE_VALUE,
-											new DHTPluginOperationAdapter() {
-																					
-												@Override
-												public boolean 
-												diversified() 
-												{
-													return( false );
-												}
-												
-												@Override
-												public void 
-												complete(
-													byte[] 		key, 
-													boolean 	timeout_occurred ) 
-												{
-													log( "Node registered" );
-													
-													status = ST_RUNNING;
-												}
-											});
-									
-								}catch( Throwable e ){
-									
-									Debug.out( e);
-								}
-							}
+							dht_count++;
+							
+						}catch( Throwable e ){
+							
 						}
-					}finally{
+					}
+					
+					@Override
+					public void 
+					complete(
+						byte[] 		key, 
+						boolean 	timeout_occurred) 
+					{	
+						last_dht_count = dht_count;
+						
+						boolean	first_time;
 						
 						synchronized( MsgSyncHandler.this ){
+						
+							first_time = !dht_check_done;
+						
+							dht_check_done = true;
+						}
+						
+						try{
+							if ( first_time ){
+								
+								if ( diversified ){
+									
+									log( "Not registering as sufficient nodes located" );
+									
+									status = ST_RUNNING;
+									
+								}else{
+									
+									log( "Registering node" );
+									
+									Map<String,Object>	map = new HashMap<String,Object>();
+									
+									map.put( "u", my_uid );
+									
+									try{
+										byte[] blah_bytes = BEncoder.encode( map );
+										
+										dht.put(
+												dht_listen_key,
+												"Message Sync write: " + getString(),
+												blah_bytes,
+												DHTPluginInterface.FLAG_SINGLE_VALUE,
+												new DHTPluginOperationAdapter() {
+																						
+													@Override
+													public boolean 
+													diversified() 
+													{
+														return( false );
+													}
+													
+													@Override
+													public void 
+													complete(
+														byte[] 		key, 
+														boolean 	timeout_occurred ) 
+													{
+														log( "Node registered" );
+														
+														status = ST_RUNNING;
+													}
+												});
+										
+									}catch( Throwable e ){
+										
+										Debug.out( e);
+									}
+								}
+							}
+						}finally{
 							
-							checking_dht = false;
+							synchronized( MsgSyncHandler.this ){
+								
+								checking_dht = false;
+							}
 						}
 					}
-				}
-			});		
+				});		
+		}catch( Throwable e ){
+			
+			// can get here if dht not yet initialised
+		}
 	}
 	
 	protected boolean
@@ -1682,6 +1737,33 @@ MsgSyncHandler
 		if ( destroyed ){
 			
 			return( false );
+		}
+		
+		if ( !dht_listen_keys_registered ){
+			
+			synchronized( pending_handler_regs ){
+								
+				if ( !dht.isInitialising()){
+					
+					for ( Object[] entry: pending_handler_regs ){
+						
+						try{
+							dht.registerHandler(
+								(byte[])entry[0],
+								(DHTPluginTransferHandler)entry[1],
+								(Map<String,Object>)entry[2] );
+								
+						}catch( Throwable e ){
+							
+							Debug.out( e );
+						}
+					}
+					
+					pending_handler_regs.clear();
+					
+					dht_listen_keys_registered = true;
+				}
+			}
 		}
 		
 		if ( count % SECRET_TIDY_TICKS == 0 ){
@@ -1994,7 +2076,7 @@ MsgSyncHandler
 					( live < 100 && elapsed > live*2*60*1000 ) ||
 					elapsed > live*4*60*1000 ){
 				
-				checkDHT( false );
+				checkDHT();
 			}
 		}
 		
@@ -6017,14 +6099,20 @@ MsgSyncHandler
 			
 			status = ST_DESTROYED;
 			
-			if ( dht_listen_key_registered ){
-			
-				dht.unregisterHandler( dht_listen_key, this );
-			}
-			
-			if ( peek_xfer_handler != null ){
-			
-				dht.unregisterHandler( peek_xfer_key, peek_xfer_handler ); 
+			synchronized( pending_handler_regs ){
+				
+				if ( dht_listen_keys_registered ){
+				
+					dht.unregisterHandler( dht_listen_key, this );
+				
+					if ( peek_xfer_handler != null ){
+				
+						dht.unregisterHandler( peek_xfer_key, peek_xfer_handler ); 
+					}
+				}else{
+					
+					pending_handler_regs.clear();
+				}
 			}
 			
 			dht.removeListener( this );

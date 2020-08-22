@@ -1568,31 +1568,33 @@ MsgSyncHandler
 	private void
 	checkDHT()
 	{
-		try{
-			if ( parent_handler != null ){
-				
-					// no DHT activity for child handlers
+		if ( parent_handler != null ){
+			
+			// no DHT activity for child handlers
+		
+			return;
+		}	
+
+		boolean went_async = false;
+		
+		synchronized( this ){
+			
+			if ( destroyed ){
 				
 				return;
 			}
 			
-			synchronized( this ){
+			if ( checking_dht ){
 				
-				if ( destroyed ){
-					
-					return;
-				}
-				
-				if ( checking_dht ){
-					
-					return;
-				}
-				
-				checking_dht = true;
-				
-				last_dht_check	= SystemTime.getMonotonousTime();
+				return;
 			}
 			
+			checking_dht = true;
+			
+			last_dht_check	= SystemTime.getMonotonousTime();
+		}
+		
+		try{
 			if ( dht.isInitialising()){
 				
 				log( "DHT is initialising, skipping DHT node check" );
@@ -1652,30 +1654,30 @@ MsgSyncHandler
 						byte[] 		key, 
 						boolean 	timeout_occurred) 
 					{	
-						last_dht_count = dht_count;
-						
-						long now = SystemTime.getMonotonousTime();
-						
-						boolean	do_put;
-						
-						synchronized( MsgSyncHandler.this ){
-						
-							if ( 	dht_put_done_time == -1 || 
-									( status == ST_INITIALISING && now - dht_put_done_time > 20*60*1000 )){
-						
-										// seen some chats stuck in 'initialising' after dht reconnect		
-								
-								dht_put_done_time = now;
-								
-								do_put = true;
-								
-							}else{
-								
-								do_put = false;
-							}
-						}
-						
 						try{
+							last_dht_count = dht_count;
+							
+							long now = SystemTime.getMonotonousTime();
+							
+							boolean	do_put;
+							
+							synchronized( MsgSyncHandler.this ){
+							
+								if ( 	dht_put_done_time == -1 || 
+										( status == ST_INITIALISING && now - dht_put_done_time > 20*60*1000 )){
+							
+											// seen some chats stuck in 'initialising' after dht reconnect		
+									
+									dht_put_done_time = now;
+									
+									do_put = true;
+									
+								}else{
+									
+									do_put = false;
+								}
+							}
+												
 							if ( do_put ){
 								
 								if ( diversified ){
@@ -1735,11 +1737,24 @@ MsgSyncHandler
 							}
 						}
 					}
-				});		
+				});	
+			
+			went_async = true;
+			
 		}catch( Throwable e ){
 			
 			// can get here if dht not yet initialised
-		}
+			
+		}finally{
+			
+			if ( !went_async ){
+				
+				synchronized( this ){
+					
+					checking_dht = false;
+				}
+			}
+		}				
 	}
 	
 	protected boolean

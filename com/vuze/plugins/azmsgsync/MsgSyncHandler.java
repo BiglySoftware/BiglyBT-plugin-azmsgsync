@@ -275,7 +275,7 @@ MsgSyncHandler
 	private volatile int 		status			= ST_INITIALISING;
 	private volatile int		last_dht_count	= -1;
 	
-	private boolean	dht_check_done;
+	private long	dht_put_done_time = -1;
 	
 	private volatile int		in_req;
 	private volatile int		out_req_ok;
@@ -1654,17 +1654,29 @@ MsgSyncHandler
 					{	
 						last_dht_count = dht_count;
 						
-						boolean	first_time;
+						long now = SystemTime.getMonotonousTime();
+						
+						boolean	do_put;
 						
 						synchronized( MsgSyncHandler.this ){
 						
-							first_time = !dht_check_done;
+							if ( 	dht_put_done_time == -1 || 
+									( status == ST_INITIALISING && now - dht_put_done_time > 20*60*1000 )){
 						
-							dht_check_done = true;
+										// seen some chats stuck in 'initialising' after dht reconnect		
+								
+								dht_put_done_time = now;
+								
+								do_put = true;
+								
+							}else{
+								
+								do_put = false;
+							}
 						}
 						
 						try{
-							if ( first_time ){
+							if ( do_put ){
 								
 								if ( diversified ){
 									

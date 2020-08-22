@@ -710,6 +710,13 @@ MsgSyncPlugin
 					
 				ipc_options.put( "server_id", server_id );
 					
+				Number timeout = (Number)options.get( "timeout" );
+				
+				if ( timeout != null ){
+					
+					ipc_options.put( "timeout", timeout.longValue());
+				}
+				
 				dht = (DHTPluginInterface)pi.getIPC().invoke( "getProxyDHT", new Object[]{ "msg_sync_chat", ipc_options });
 			}
 		}else{

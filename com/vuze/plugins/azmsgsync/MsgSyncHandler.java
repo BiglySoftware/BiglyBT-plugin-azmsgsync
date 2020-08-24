@@ -177,6 +177,7 @@ MsgSyncHandler
 	private byte[]									dht_listen_key;
 	private byte[]									dht_call_key;
 	private volatile boolean						checking_dht;
+	private volatile boolean						registering_dht;
 	private long									last_dht_check;
 
 	private final List<Object[]>					pending_handler_regs = new ArrayList<>();
@@ -1687,9 +1688,19 @@ MsgSyncHandler
 									status = ST_RUNNING;
 									
 								}else{
+																		
+									synchronized( MsgSyncHandler.this ){
+										
+										if ( registering_dht ){
+											
+											return;
+										}
+										
+										registering_dht = true;
+									}
 									
 									log( "Registering node" );
-									
+
 									Map<String,Object>	map = new HashMap<String,Object>();
 									
 									map.put( "u", my_uid );
@@ -1719,11 +1730,21 @@ MsgSyncHandler
 													{
 														log( "Node registered" );
 														
+														synchronized( MsgSyncHandler.this ){
+															
+															registering_dht = false;
+														}
+														
 														status = ST_RUNNING;
 													}
 												});
 										
 									}catch( Throwable e ){
+										
+										synchronized( MsgSyncHandler.this ){
+											
+											registering_dht = false;
+										}
 										
 										Debug.out( e);
 									}
@@ -2098,7 +2119,8 @@ MsgSyncHandler
 			
 			long elapsed = now - last_dht_check;
 			
-			if ( 	live == 0 ||
+			if ( 	( status == ST_INITIALISING && !( checking_dht || registering_dht )) ||
+					live == 0 ||
 					( live < 50  && elapsed > live*60*1000 )   ||
 					( live < 100 && elapsed > live*2*60*1000 ) ||
 					elapsed > live*4*60*1000 ){

@@ -35,7 +35,6 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -5837,9 +5836,7 @@ MsgSyncHandler
 	{
 		if ( save_messages ){
 		
-			File dir = plugin.getPersistDir();
-			
-			final File file_name = new File( dir, Base32.encode( user_key ) + (is_anonymous_chat?"a":"p") + ".dat" );
+			File file_name = getMessageFile();
 
 			if ( file_name.exists()){
 				
@@ -6070,9 +6067,7 @@ MsgSyncHandler
 					msg_exp.add( m );
 				}
 					
-				File dir = plugin.getPersistDir();
-				
-				File file_name = new File( dir, Base32.encode( user_key ) + (is_anonymous_chat?"a":"p") + ".dat" );
+				File file_name = getMessageFile();
 
 				FileUtil.writeResilientFile( file_name,  map );
 				
@@ -6084,11 +6079,42 @@ MsgSyncHandler
 	private void
 	deleteMessages()
 	{		
-		File dir = plugin.getPersistDir();
-			
-		File file_name = new File( dir, Base32.encode( user_key ) + (is_anonymous_chat?"a":"p") + ".dat" );
+		File file_name = getMessageFile();
 
 		file_name.delete();
+	}
+	
+	private File
+	getMessageFile()
+	{
+		File dir = plugin.getPersistDir();
+		
+		byte[] key = user_key;
+		
+		File old_file_name = null;
+		
+		String suffix =  (is_anonymous_chat?"a":"p") + ".dat";
+		
+		if ( user_key.length > 64 ){
+		
+				// migrate from when file names could get pretty long and cause issues on some file systems
+			
+			old_file_name = new File( dir, Base32.encode( user_key ) + suffix );
+			
+			key = new SHA1Simple().calculateHash( user_key );
+		}
+		
+		File file_name = new File( dir, Base32.encode( key ) + suffix );
+		
+		if ( !file_name.exists()){
+			
+			if ( old_file_name != null && old_file_name.exists()){
+				
+				old_file_name.renameTo( file_name );
+			}
+		}
+		
+		return( file_name );
 	}
 	
 	protected void

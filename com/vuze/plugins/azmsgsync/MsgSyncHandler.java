@@ -35,6 +35,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -170,6 +171,9 @@ MsgSyncHandler
 	
 	private static ThreadPool	sync_pool 	= new ThreadPool("MsgSyncHandler:pool", 32, true );
 
+	private static final AtomicInteger				active_dht_checks		= new AtomicInteger();
+	private static final int						MAX_ACTIVE_DHT_CHECKS	= 4;
+	
 	private final MsgSyncPlugin						plugin;
 	private final DHTPluginInterface				dht;
 	private final byte[]							user_key;
@@ -1591,7 +1595,7 @@ MsgSyncHandler
 			
 			checking_dht = true;
 			
-			last_dht_check	= SystemTime.getMonotonousTime();
+			last_dht_check	= SystemTime.getMonotonousTime() + RandomUtils.nextLong( 20*1000 );	// randomise stuff a bit
 		}
 		
 		try{
@@ -1653,7 +1657,9 @@ MsgSyncHandler
 					complete(
 						byte[] 		key, 
 						boolean 	timeout_occurred) 
-					{	
+					{
+						active_dht_checks.decrementAndGet();
+						
 						try{
 							last_dht_count = dht_count;
 							
@@ -1758,6 +1764,8 @@ MsgSyncHandler
 						}
 					}
 				});	
+			
+			active_dht_checks.incrementAndGet();
 			
 			went_async = true;
 			
@@ -2124,7 +2132,10 @@ MsgSyncHandler
 					( live < 100 && elapsed > live*2*60*1000 ) ||
 					elapsed > live*4*60*1000 ){
 				
-				checkDHT();
+				if ( active_dht_checks.get() <= MAX_ACTIVE_DHT_CHECKS ){
+				
+					checkDHT();
+				}
 			}
 		}
 		

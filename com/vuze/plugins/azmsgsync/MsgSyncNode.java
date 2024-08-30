@@ -25,7 +25,6 @@ package com.vuze.plugins.azmsgsync;
 import java.net.Inet6Address;
 import java.util.Arrays;
 
-import com.biglybt.core.util.Base32;
 import com.biglybt.core.util.SystemTime;
 
 import com.biglybt.plugin.dht.DHTPluginContact;

@@ -6216,7 +6216,9 @@ MsgSyncHandler
 	log(
 		String	str )
 	{
-		plugin.log( friendly_name + ": " + str );
+		String flags = (is_anonymous_chat?"A":"P") + "," + (full_init?"F":"T");
+		
+		plugin.log( friendly_name + " (" + flags + "): " + str );
 	}
 	
 

@@ -883,6 +883,11 @@ MsgSyncHandler
 		init( true );
 	}
 	
+	protected String
+	getConfigKey()
+	{
+		return( CryptoManager.CRYPTO_CONFIG_PREFIX + "msgsync." + dht.getNetwork() + "." + ByteFormatter.encodeString( user_key ));
+	}
 	
 	public void
 	localAddressChanged(

@@ -28,6 +28,8 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
 
+import com.biglybt.core.config.COConfigurationManager;
+import com.biglybt.core.security.CryptoManager;
 import com.biglybt.core.util.AENetworkClassifier;
 import com.biglybt.core.util.AERunnable;
 import com.biglybt.core.util.AESemaphore;
@@ -36,6 +38,8 @@ import com.biglybt.core.util.AsyncDispatcher;
 import com.biglybt.core.util.BDecoder;
 import com.biglybt.core.util.BEncoder;
 import com.biglybt.core.util.ByteArrayHashMap;
+import com.biglybt.core.util.ByteFormatter;
+import com.biglybt.core.util.Constants;
 import com.biglybt.core.util.Debug;
 import com.biglybt.core.util.FileUtil;
 import com.biglybt.core.util.SimpleTimer;
@@ -73,11 +77,12 @@ MsgSyncPlugin
 	protected static final int	TIMER_PERIOD = 2500;
 	
 		// 4 - added peek IPC
+		// 5 - added listMessageHandlers and destroyMessageHandler
 	
-	private static final int 	IPC_VERSION	= 4;
+	private static final int 	IPC_VERSION	= 5;
 	
 	
-	private PluginInterface plugin_interface;
+	private PluginInterface 		plugin_interface;
 	private LoggerChannel 			log;
 	private BasicPluginConfigModel 	config_model;
 	private BasicPluginViewModel	view_model;
@@ -1305,6 +1310,80 @@ MsgSyncPlugin
 		}
 		
 		removeSyncHandler( handler );
+		
+		Map<String,Object>	reply = new HashMap<String, Object>();
+
+		return( reply );
+	}
+	
+	public List<Map<String,Object>>
+	listMessageHandlers(
+		Map<String,Object>		options )
+		
+		throws IPCException
+	{
+		Set<String> params = COConfigurationManager.getDefinedParameters();
+
+		List<Map<String,Object>> result = new ArrayList<>();
+
+		String prefix = CryptoManager.CRYPTO_CONFIG_PREFIX + "msgsync.";
+		
+		for ( String param: params ){
+			
+			if ( param.startsWith( prefix )){
+				
+				String[] bits = param.substring( prefix.length()).split( "\\." );
+				
+				if ( bits.length == 2 ){
+					
+					Map<String,Object> map = new HashMap<>();
+					
+					map.put( "network", bits[0] );
+					
+					map.put( "key", ByteFormatter.decodeString( bits[1] ));
+					
+					result.add( map );
+				}
+			}
+		}
+		
+		return( result );
+	}
+	
+	public Map<String,Object>
+	destroyMessageHandler(
+		Map<String,Object>		options )
+		
+		throws IPCException
+	{
+		MsgSyncHandler handler = (MsgSyncHandler)options.get( "handler" );
+		
+		String ckey = null;
+		
+		if ( handler != null ){
+		
+			removeMessageHandler( options );
+			
+			ckey = handler.getConfigKey();
+			
+		}else{
+			
+			byte[] key		= (byte[])options.get( "key" );
+			String network	= (String)options.get( "network" );
+			
+			if ( key != null && network != null ){
+				
+				ckey = CryptoManager.CRYPTO_CONFIG_PREFIX + "msgsync." + network + "." + ByteFormatter.encodeString(key);
+			}
+		}
+		
+		if ( ckey != null ){
+			
+			if ( COConfigurationManager.removeParameter( ckey )){
+				
+				COConfigurationManager.setDirty();
+			}
+		}
 		
 		Map<String,Object>	reply = new HashMap<String, Object>();
 

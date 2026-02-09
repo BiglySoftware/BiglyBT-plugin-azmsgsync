@@ -37,6 +37,7 @@ import java.security.Signature;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -49,7 +50,7 @@ import com.biglybt.core.config.COConfigurationManager;
 import com.biglybt.core.util.AENetworkClassifier;
 import com.biglybt.core.util.AERunStateHandler;
 import com.biglybt.core.util.AERunnable;
-import com.biglybt.core.util.AEThread2;
+import com.biglybt.core.util.AEThreadVirtual;
 import com.biglybt.core.util.AEVerifier;
 import com.biglybt.core.util.BDecoder;
 import com.biglybt.core.util.BEncoder;
@@ -66,6 +67,8 @@ import com.biglybt.core.util.SHA1Simple;
 import com.biglybt.core.util.SimpleTimer;
 import com.biglybt.core.util.SystemTime;
 import com.biglybt.core.util.ThreadPool;
+import com.biglybt.core.util.ThreadPoolParent;
+import com.biglybt.core.util.ThreadPoolVirtual;
 import com.biglybt.core.util.TimeFormatter;
 import com.biglybt.core.util.TimerEvent;
 import com.biglybt.core.util.TimerEventPerformer;
@@ -169,7 +172,18 @@ MsgSyncHandler
 		xfer_options.put( "disable_call_acks", true );
 	}
 	
-	private static ThreadPool	sync_pool 	= new ThreadPool("MsgSyncHandler:pool", 32, true );
+	private static final ThreadPoolParent<AERunnable>	sync_pool;
+	
+	static{
+		if ( AEThreadVirtual.areBasicVirtualThreadsAvailable()){
+			
+			sync_pool = new ThreadPoolVirtual<>("MsgSyncHandler:pool", 32, true );
+			
+		}else{
+			
+			sync_pool = new ThreadPool<>("MsgSyncHandler:pool", 32, true );
+		}
+	}
 
 	private static final AtomicInteger				active_dht_checks		= new AtomicInteger();
 	private static final int						MAX_ACTIVE_DHT_CHECKS	= 4;
@@ -1401,11 +1415,7 @@ MsgSyncHandler
 														
 							active_threads++;
 							
-							new AEThread2( "msp:peek" )
-							{
-								@Override
-								public void
-								run()
+							new AEThreadVirtual( "msp:peek" ).start(()->
 								{
 									while( true ){
 										
@@ -1484,8 +1494,7 @@ MsgSyncHandler
 										}catch( Throwable e ){
 										}
 									}
-								}
-							}.start();
+								});
 						}
 					}
 				}
@@ -1896,10 +1905,8 @@ MsgSyncHandler
 						
 						reportInfoText( "azmsgsync.report.connecting" );
 						
-						new AEThread2( "MsgSyncHandler:getsecret"){
-							
-							@Override
-							public void run() {
+						new AEThreadVirtual( "MsgSyncHandler:getsecret").start(()->							
+							{
 								try{
 									boolean[] fatal_error = { false };
 
@@ -1927,8 +1934,7 @@ MsgSyncHandler
 										private_messaging_secret_getting = false;
 									}
 								}
-							}
-						}.start();
+							});
 					}
 				}
 			}
@@ -3163,10 +3169,8 @@ MsgSyncHandler
 				
 				node.setLastTunnel( SystemTime.getMonotonousTime());
 				
-				new AEThread2( "msgsync:tunnel"){
-					
-					@Override
-					public void run(){
+				new AEThreadVirtual( "msgsync:tunnel").start(()->
+					{
 					
 						boolean	worked = false;
 						
@@ -3220,8 +3224,8 @@ MsgSyncHandler
 								active_tunnels.remove( node );
 							}
 						}
-					}
-				}.start();
+					});
+				
 			}
 		}
 	}
@@ -3939,7 +3943,7 @@ MsgSyncHandler
 						
 		final MsgSyncNode	f_sync_node = sync_node;
 		
-		sync_pool.run(
+		sync_pool.runTask(
 			new AERunnable()
 			{	
 				@Override
@@ -4298,179 +4302,109 @@ MsgSyncHandler
 		byte[]	originator_key = null;
 		
 		int	total_received = 0;
+					
+		ByteArrayHashMap<List<MsgSyncNode>>	msg_node_map = bloom_details.msg_node_map;
 		
-		synchronized( bloom_details ){
+		List<MsgSyncNode>	all_public_keys = bloom_details.all_public_keys;
 			
-			ByteArrayHashMap<List<MsgSyncNode>>	msg_node_map = bloom_details.msg_node_map;
-			
-			List<MsgSyncNode>	all_public_keys = bloom_details.all_public_keys;
-				
-				// don't bother with this until its a busy channel
-			
-			boolean	record_history = bloom_details.new_message_count > MAX_MESSAGES;
+			// don't bother with this until its a busy channel
+		
+		boolean	record_history = bloom_details.new_message_count > MAX_MESSAGES;
 
-			for ( Map<String,Object> m: list ){
+		for ( Map<String,Object> m: list ){
+			
+			try{
+				Set<MsgSyncNode>		keys_to_try = null;
 				
-				try{
-					Set<MsgSyncNode>		keys_to_try = null;
+				byte[] node_uid		= (byte[])m.get( "u" );
+				byte[] message_id 	= (byte[])m.get( "i" );
+				byte[] content		= (byte[])m.get( "c" );
+				byte[] control 		= (byte[])m.get( "$" );
+				byte[] signature	= (byte[])m.get( "s" );
+				byte[] old_history	= (byte[])m.get( "h" );
+									
+				byte[] new_history;
+				
+				if ( record_history ){
 					
-					byte[] node_uid		= (byte[])m.get( "u" );
-					byte[] message_id 	= (byte[])m.get( "i" );
-					byte[] content		= (byte[])m.get( "c" );
-					byte[] control 		= (byte[])m.get( "$" );
-					byte[] signature	= (byte[])m.get( "s" );
-					byte[] old_history	= (byte[])m.get( "h" );
-										
-					byte[] new_history;
-					
-					if ( record_history ){
+					if ( originator_key == null ){
 						
-						if ( originator_key == null ){
-							
-							originator_key = new byte[4];
+						originator_key = new byte[4];
 
-							try{
-								byte[] temp = new SHA1Simple().calculateHash( originator.getContactAddress().getBytes( "UTF-8" ));
-							
-								System.arraycopy( temp, 0, originator_key, 0, 4 );
-								
-							}catch( Throwable e ){
-								
-								Debug.out( e );
-							}
-						}
+						try{
+							byte[] temp = new SHA1Simple().calculateHash( originator.getContactAddress().getBytes( "UTF-8" ));
 						
-						if ( old_history == null || old_history.length == 0 ){
+							System.arraycopy( temp, 0, originator_key, 0, 4 );
 							
-							new_history	= originator_key;
+						}catch( Throwable e ){
 							
-						}else{
-							
-							int	old_len = old_history.length;
-							
-							if ( old_len > MAX_HISTORY_RECORD_LEN - 4 ){
-								
-								new_history = new byte[MAX_HISTORY_RECORD_LEN];
-								
-								System.arraycopy( originator_key, 0, new_history, 0, 4 );
-								
-								System.arraycopy( old_history, 0, new_history, 4, MAX_HISTORY_RECORD_LEN-4 );
-								
-							}else{
-	
-								new_history = new byte[old_len + 4];
-								
-								System.arraycopy( originator_key, 0, new_history, 0, 4 );
-								
-								System.arraycopy( old_history, 0, new_history, 4, old_len );
-							}
+							Debug.out( e );
 						}
+					}
+					
+					if ( old_history == null || old_history.length == 0 ){
+						
+						new_history	= originator_key;
+						
 					}else{
 						
-						new_history = old_history;
-					}
-					
-					int	age = ((Number)m.get( "a" )).intValue();
-							
-						// these won't be present if remote believes we already have it (subject to occasional bloom false positives)
-					
-					byte[] 	public_key		= (byte[])m.get( "p" );
-					
-					Map<String,Object>		contact_map		= (Map<String,Object>)m.get( "k" );
-													
-						//log( "Message: " + ByteFormatter.encodeString( message_id ) + ": " + new String( content ) + ", age=" + age );
-													
-					boolean handled 	= false;
-					boolean	new_message	= false;
-					
-						// see if we already have a node with the correct public key
-					
-					List<MsgSyncNode> nodes = msg_node_map.get( node_uid );
-					
-					if ( nodes != null ){
+						int	old_len = old_history.length;
 						
-						for ( MsgSyncNode node: nodes ){
+						if ( old_len > MAX_HISTORY_RECORD_LEN - 4 ){
 							
-							byte[] pk = node.getPublicKey();
+							new_history = new byte[MAX_HISTORY_RECORD_LEN];
 							
-							if ( pk != null ){
-								
-								if ( keys_to_try == null ){
-									
-									keys_to_try = new HashSet<MsgSyncNode>( all_public_keys );
-								}
-								
-								keys_to_try.remove( node );
-								
-								Signature sig = CryptoECCUtils.getSignature( CryptoECCUtils.rawdataToPubkey( pk ));
-								
-								sig.update( node_uid );
-								sig.update( message_id );
-								sig.update( content );
-								
-								if ( control != null ){
-									sig.update( control );
-								}
-								
-								if ( sig.verify( signature )){
-																		
-									new_message = addMessage( node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
-									
-									handled = true;
-									
-									break;
-								}
-							}
+							System.arraycopy( originator_key, 0, new_history, 0, 4 );
+							
+							System.arraycopy( old_history, 0, new_history, 4, MAX_HISTORY_RECORD_LEN-4 );
+							
+						}else{
+
+							new_history = new byte[old_len + 4];
+							
+							System.arraycopy( originator_key, 0, new_history, 0, 4 );
+							
+							System.arraycopy( old_history, 0, new_history, 4, old_len );
 						}
 					}
+				}else{
+					
+					new_history = old_history;
+				}
+				
+				int	age = ((Number)m.get( "a" )).intValue();
 						
-					if ( !handled ){
+					// these won't be present if remote believes we already have it (subject to occasional bloom false positives)
+				
+				byte[] 	public_key		= (byte[])m.get( "p" );
+				
+				Map<String,Object>		contact_map		= (Map<String,Object>)m.get( "k" );
+												
+					//log( "Message: " + ByteFormatter.encodeString( message_id ) + ": " + new String( content ) + ", age=" + age );
+												
+				boolean handled 	= false;
+				boolean	new_message	= false;
+				
+					// see if we already have a node with the correct public key
+				
+				List<MsgSyncNode> nodes = msg_node_map.get( node_uid );
+				
+				if ( nodes != null ){
+					
+					for ( MsgSyncNode node: nodes ){
 						
-						if ( public_key == null ){
-							
-								// the required public key could be registered against another node-id
-								// in this case the other side won't have returned it to us but we won't
-								// find it under the existing set of keys associated with the node-id
+						byte[] pk = node.getPublicKey();
+						
+						if ( pk != null ){
 							
 							if ( keys_to_try == null ){
 								
 								keys_to_try = new HashSet<MsgSyncNode>( all_public_keys );
 							}
 							
-							for ( MsgSyncNode n: keys_to_try ){
-								
-								byte[] pk = n.getPublicKey();
-								
-								Signature sig = CryptoECCUtils.getSignature( CryptoECCUtils.rawdataToPubkey( pk));
-								
-								sig.update( node_uid );
-								sig.update( message_id );
-								sig.update( content );
-								
-								if ( control != null ){
-									sig.update( control );
-								}
-								
-								if ( sig.verify( signature )){
-																			
-										// dunno if the contact has changed so all we can do is use the existing
-										// one associated with this key
-									
-									MsgSyncNode msg_node = addNode( n.getContact(), node_uid, pk );
-									
-									new_message = addMessage( msg_node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
-								
-									handled = true;
-																	
-									break;
-								}
-							}
-						}else{
+							keys_to_try.remove( node );
 							
-								// no existing pk - we HAVE to record this message against
-								// this supplied pk otherwise we can't replicate it later
-	
-							Signature sig = CryptoECCUtils.getSignature( CryptoECCUtils.rawdataToPubkey( public_key ));
+							Signature sig = CryptoECCUtils.getSignature( CryptoECCUtils.rawdataToPubkey( pk ));
 							
 							sig.update( node_uid );
 							sig.update( message_id );
@@ -4482,66 +4416,133 @@ MsgSyncHandler
 							
 							if ( sig.verify( signature )){
 																	
-								DHTPluginContact contact = dht.importContact( contact_map );
+								new_message = addMessage( node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
 								
-									// really can't do anything if contact deserialiseation fails
+								handled = true;
 								
-								if ( contact != null ){
-									
-									MsgSyncNode msg_node = null;
-									
-										// look for existing node without public key that we can use
-									
-									if ( nodes != null ){
-										
-										for ( MsgSyncNode node: nodes ){
-											
-											if ( node.setDetails( contact, public_key )){
-												
-												msg_node = node;
-												
-												break;
-											}
-										}
-									}
-									
-									if ( msg_node == null ){
-									
-										msg_node = addNode( contact, node_uid, public_key );
-										
-											// save so local list so pk available to other messages
-											// in this loop
-										
-										List<MsgSyncNode> x = msg_node_map.get( node_uid );
-										
-										if ( x == null ){
-											
-											x = new ArrayList<MsgSyncNode>();
-											
-											msg_node_map.put( node_uid, x );
-										}
-										
-										x.add( msg_node );
-									}
-										
-									all_public_keys.add( msg_node );
-									
-									new_message = addMessage( msg_node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
-									
-									handled = true;
-								}
+								break;
 							}
 						}
 					}
-					
-					if ( new_message && handled ){
-						
-						total_received++;
-					}
-				}catch( Throwable e ){
-					
-					Debug.out( e );
 				}
+					
+				if ( !handled ){
+					
+					if ( public_key == null ){
+						
+							// the required public key could be registered against another node-id
+							// in this case the other side won't have returned it to us but we won't
+							// find it under the existing set of keys associated with the node-id
+						
+						if ( keys_to_try == null ){
+							
+							keys_to_try = new HashSet<MsgSyncNode>( all_public_keys );
+						}
+						
+						for ( MsgSyncNode n: keys_to_try ){
+							
+							byte[] pk = n.getPublicKey();
+							
+							Signature sig = CryptoECCUtils.getSignature( CryptoECCUtils.rawdataToPubkey( pk));
+							
+							sig.update( node_uid );
+							sig.update( message_id );
+							sig.update( content );
+							
+							if ( control != null ){
+								sig.update( control );
+							}
+							
+							if ( sig.verify( signature )){
+																		
+									// dunno if the contact has changed so all we can do is use the existing
+									// one associated with this key
+								
+								MsgSyncNode msg_node = addNode( n.getContact(), node_uid, pk );
+								
+								new_message = addMessage( msg_node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
+							
+								handled = true;
+																
+								break;
+							}
+						}
+					}else{
+						
+							// no existing pk - we HAVE to record this message against
+							// this supplied pk otherwise we can't replicate it later
+
+						Signature sig = CryptoECCUtils.getSignature( CryptoECCUtils.rawdataToPubkey( public_key ));
+						
+						sig.update( node_uid );
+						sig.update( message_id );
+						sig.update( content );
+						
+						if ( control != null ){
+							sig.update( control );
+						}
+						
+						if ( sig.verify( signature )){
+																
+							DHTPluginContact contact = dht.importContact( contact_map );
+							
+								// really can't do anything if contact deserialiseation fails
+							
+							if ( contact != null ){
+								
+								MsgSyncNode msg_node = null;
+								
+									// look for existing node without public key that we can use
+								
+								if ( nodes != null ){
+									
+									for ( MsgSyncNode node: nodes ){
+										
+										if ( node.setDetails( contact, public_key )){
+											
+											msg_node = node;
+											
+											break;
+										}
+									}
+								}
+								
+								if ( msg_node == null ){
+								
+									msg_node = addNode( contact, node_uid, public_key );
+									
+										// save so local list so pk available to other messages
+										// in this loop
+									
+									List<MsgSyncNode> x = msg_node_map.get( node_uid );
+									
+									if ( x == null ){
+										
+										x = new ArrayList<MsgSyncNode>();
+										
+										msg_node_map.put( node_uid, x );
+									}
+									
+									x.add( msg_node );
+								}
+									
+								all_public_keys.add( msg_node );
+								
+								new_message = addMessage( msg_node, message_id, content, control, signature, age, new_history, contact_map, MS_INCOMING );
+								
+								handled = true;
+							}
+						}
+					}
+				}
+				
+				if ( new_message && handled ){
+					
+					total_received++;
+				}
+			}catch( Throwable e ){
+				
+				Debug.out( e );
 			}
 		}
 		
@@ -5031,6 +5032,8 @@ MsgSyncHandler
 		
 		BloomFilter	bloom	= bloom_details.bloom;
 	
+		ReentrantLock	bloom_lock = new ReentrantLock();
+		
 		if ( bloom == null ){
 			
 				// clashed too many times, whatever, we'll try again soon
@@ -5209,7 +5212,15 @@ MsgSyncHandler
 					
 					if ( list != null ){
 						
-						received = receiveMessages( sync_node, bloom_details, list );
+						try{
+							bloom_lock.lock();
+						
+							received = receiveMessages( sync_node, bloom_details, list );
+							
+						}finally{
+							
+							bloom_lock.unlock();
+						}
 						
 					}else{
 						
